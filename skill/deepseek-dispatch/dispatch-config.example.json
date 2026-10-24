@@ -1,0 +1,23 @@
+{
+  "lang": "zh",
+  "permissionMode": "workspace-write",
+  "agent": {
+    "provider": "deepseek-official",
+    "model": "deepseek-flash",
+    "reasoningEffort": "max"
+  },
+  "reuseSavedCredentials": false,
+  "maxToolLines": 40,
+  "pricing": {
+    "currency": "CNY",
+    "unit": "per 1M tokens",
+    "source": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
+    "checked": "2026-10-24",
+    "timeZone": "Asia/Shanghai",
+    "peak": { "cacheHit": 0.04, "cacheMiss": 2, "output": 8 },
+    "offPeak": { "cacheHit": 0.02, "cacheMiss": 1, "output": 4 },
+    "peakDays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+    "peakHours": ["09:00-12:00", "14:00-18:00"],
+    "holidays": []
+  }
+}
