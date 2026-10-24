@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_CONFIG, buildPatch, estimateCost, isPeak, loadConfig, readEvents, registryKey } from '../skill/deepseek-dispatch/ds-task.mjs';
+import { DEFAULT_CONFIG, buildPatch, estimateCost, isPeak, loadConfig, readEvents, registryKey } from '../skill/dsh-native/ds-task.mjs';
 
 const pricing = DEFAULT_CONFIG.pricing;
 

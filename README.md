@@ -1,6 +1,10 @@
-# deepseek-dispatch
+# claude-dsh-native
 
 [English](README.en.md) | 中文
+
+> Claude 规划，DeepSeek Harness 执行：原生驱动真正的 dsh 智能体，而不只是调 API，支持会话接续和费用估算。
+
+> **非官方项目，与 DeepSeek 无关。**
 
 一个 Claude Code skill：**Claude 负责规划、拆分和验收，本机的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh --profile headless`）负责执行。**
 
@@ -48,17 +52,17 @@ Claude 把任务写成任务书，用 `ds-task.mjs` 交给 dsh；dsh 作为一�
 
 ```bash
 npm install -g @deepseek-ai/dsh
-git clone https://github.com/jxnxkx/deepseek-dispatch.git
-cd deepseek-dispatch
+git clone https://github.com/jxnxkx/claude-dsh-native.git
+cd claude-dsh-native
 node scripts/install.mjs
 ```
 
-`install.mjs` 把 `skill/deepseek-dispatch/` 复制到 `~/.claude/skills/deepseek-dispatch/`（**会覆盖同名目录**），并在 `~/.dsh/dispatch-config.json` 不存在时创建一份默认配置。只想装到某个项目里：`node scripts/install.mjs <项目>/.claude/skills`。
+`install.mjs` 把 `skill/dsh-native/` 复制到 `~/.claude/skills/dsh-native/`（**会覆盖同名目录**），并在 `~/.dsh/dispatch-config.json` 不存在时创建一份默认配置。只想装到某个项目里：`node scripts/install.mjs <项目>/.claude/skills`。
 
 装好后在 Claude Code 里说"把这个任务派给 DeepSeek"之类的话即可。也可以直接手动运行：
 
 ```bash
-node ~/.claude/skills/deepseek-dispatch/ds-task.mjs --workdir ./my-project --task "跑一下测试，修好失败的用例"
+node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑一下测试，修好失败的用例"
 ```
 
 完整参数见 `--help`。
@@ -84,7 +88,7 @@ node ~/.claude/skills/deepseek-dispatch/ds-task.mjs --workdir ./my-project --tas
 
 ## 配置文件
 
-`~/.dsh/dispatch-config.json`（或环境变量 `DS_DISPATCH_CONFIG` 指定的路径），样例见 [`dispatch-config.example.json`](skill/deepseek-dispatch/dispatch-config.example.json)。没写的字段用默认值。
+`~/.dsh/dispatch-config.json`（或环境变量 `DS_DISPATCH_CONFIG` 指定的路径），样例见 [`dispatch-config.example.json`](skill/dsh-native/dispatch-config.example.json)。没写的字段用默认值。
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |

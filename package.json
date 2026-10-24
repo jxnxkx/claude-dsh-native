@@ -1,8 +1,8 @@
 {
-  "name": "deepseek-dispatch",
+  "name": "claude-dsh-native",
   "version": "0.1.0",
   "private": true,
-  "description": "Claude Code skill: Claude plans and reviews, DeepSeek Harness (dsh headless) executes.",
+  "description": "Claude plans, DeepSeek Harness executes — drives a real dsh agent (not just the API), with session reuse and cost estimates.",
   "type": "module",
   "license": "MIT",
   "author": "jxnxkx",

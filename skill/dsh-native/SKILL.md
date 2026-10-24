@@ -1,5 +1,5 @@
 ---
-name: deepseek-dispatch
+name: dsh-native
 description: 由 Claude 做顶层规划、拆分和验收，把边界清楚的执行类子任务派给本机 DeepSeek Harness（dsh headless）执行。当用户说"派给 DeepSeek / 让 DeepSeek 做 / 交给 dsh / 用 DeepSeek 跑"，或要求 Claude 只负责规划、执行交给 DeepSeek 时使用。
 ---
 
@@ -21,7 +21,7 @@ description: 由 Claude 做顶层规划、拆分和验收，把边界清楚的�
 2. 运行（路径换成本 skill 实际所在的目录）：
 
    ```bash
-   node ~/.claude/skills/deepseek-dispatch/ds-task.mjs --workdir "<项目目录>" --task-file "<任务书.md>"
+   node ~/.claude/skills/dsh-native/ds-task.mjs --workdir "<项目目录>" --task-file "<任务书.md>"
    ```
 
    - Windows PowerShell 5.1 下如果中文输出乱码，先执行 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new()`，或改用 Git Bash。

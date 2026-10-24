@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Install the skill into Claude Code and create the config file if it does not exist yet.
 //
-//   node scripts/install.mjs            -> ~/.claude/skills/deepseek-dispatch (user-level skill)
-//   node scripts/install.mjs <dir>      -> <dir>/deepseek-dispatch, e.g. <project>/.claude/skills
+//   node scripts/install.mjs            -> ~/.claude/skills/dsh-native (user-level skill)
+//   node scripts/install.mjs <dir>      -> <dir>/dsh-native, e.g. <project>/.claude/skills
 //
 // Existing skill files are overwritten; an existing config file is left alone.
 import fs from 'node:fs';
@@ -11,9 +11,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const src = path.join(repo, 'skill', 'deepseek-dispatch');
+const src = path.join(repo, 'skill', 'dsh-native');
 const skillsDir = process.argv[2] ? path.resolve(process.argv[2]) : path.join(os.homedir(), '.claude', 'skills');
-const dest = path.join(skillsDir, 'deepseek-dispatch');
+const dest = path.join(skillsDir, 'dsh-native');
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 19)) {

@@ -1,6 +1,10 @@
-# deepseek-dispatch
+# claude-dsh-native
 
 English | [中文](README.md)
+
+> Claude plans, DeepSeek Harness executes — drives a real dsh agent (not just the API), with session reuse and cost estimates.
+
+> **Unofficial project, not affiliated with DeepSeek.**
 
 A Claude Code skill where **Claude plans, splits and reviews the work, and a local [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh --profile headless`) does it.**
 
@@ -50,17 +54,17 @@ Requirements: Node 22.19+ or 24+, and [Claude Code](https://claude.com/claude-co
 
 ```bash
 npm install -g @deepseek-ai/dsh
-git clone https://github.com/jxnxkx/deepseek-dispatch.git
-cd deepseek-dispatch
+git clone https://github.com/jxnxkx/claude-dsh-native.git
+cd claude-dsh-native
 node scripts/install.mjs
 ```
 
-`install.mjs` copies `skill/deepseek-dispatch/` to `~/.claude/skills/deepseek-dispatch/` (**overwriting a directory of the same name**) and creates a default `~/.dsh/dispatch-config.json` if there is none. To install into one project only: `node scripts/install.mjs <project>/.claude/skills`.
+`install.mjs` copies `skill/dsh-native/` to `~/.claude/skills/dsh-native/` (**overwriting a directory of the same name**) and creates a default `~/.dsh/dispatch-config.json` if there is none. To install into one project only: `node scripts/install.mjs <project>/.claude/skills`.
 
 Then ask Claude Code to "dispatch this to DeepSeek". You can also run it by hand:
 
 ```bash
-node ~/.claude/skills/deepseek-dispatch/ds-task.mjs --workdir ./my-project --task "Run the tests and fix the failures"
+node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "Run the tests and fix the failures"
 ```
 
 See `--help` for all options.
@@ -86,7 +90,7 @@ If no key is found, the output says so. The script never reads or prints the key
 
 ## Config
 
-`~/.dsh/dispatch-config.json` (or the path in `DS_DISPATCH_CONFIG`); see [`dispatch-config.example.json`](skill/deepseek-dispatch/dispatch-config.example.json). Missing fields fall back to defaults.
+`~/.dsh/dispatch-config.json` (or the path in `DS_DISPATCH_CONFIG`); see [`dispatch-config.example.json`](skill/dsh-native/dispatch-config.example.json). Missing fields fall back to defaults.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
