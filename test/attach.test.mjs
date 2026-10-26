@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { attachPending, queueAttach, readPending } from '../skill/dsh-native/attach-workspaces.mjs';
-import { desktopSettings } from '../skill/dsh-native/open-desktop.mjs';
+import { appleString, appletSource, desktopSettings, processPattern } from '../skill/dsh-native/open-desktop.mjs';
 
 function fakeHome({ workspaces = {}, sessions = [] } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dsd-home-'));
@@ -84,4 +84,63 @@ test('desktop settings: config overrides defaults, nulls keep them', () => {
   assert.equal(d.webPort, 4000);
   const custom = desktopSettings({ desktop: { path: '/opt/dsh/DeepSeek Harness' } });
   assert.equal(custom.path, '/opt/dsh/DeepSeek Harness');
+});
+
+// macOS (APFS) and Windows are case-insensitive by default; dsh stores the realpath canon, which there carries
+// the on-disk letter case. A stored path that differs only in case, or goes through a symlink, is the same folder.
+test('matches a workspace stored with other letter case or through a symlink', (t) => {
+  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dsd-Proj-')));
+  const upper = path.join(path.dirname(work), path.basename(work).toUpperCase());
+  const caseInsensitive = fs.existsSync(upper);
+  const link = path.join(os.tmpdir(), `dsd-link-${process.pid}`);
+  let linked = false;
+  try { fs.symlinkSync(work, link, 'dir'); linked = true; } catch { }
+  if (!caseInsensitive && !linked) { t.skip('case-sensitive filesystem and no symlinks'); return; }
+  const workspaces = {};
+  if (caseInsensitive) workspaces.wCase = { path: upper, title: 'p', sessionIds: [] };
+  else workspaces.wLink = { path: link, title: 'p', sessionIds: [] };
+  const home = fakeHome({ workspaces, sessions: ['session-a'] });
+  // queue the folder in yet another spelling: ds-task canonicalizes, attach does too
+  queueAttach('session-a', caseInsensitive ? path.join(path.dirname(work), path.basename(work).toLowerCase()) : work, home);
+  const r = attachPending(home);
+  assert.equal(r.attached, 1);
+  assert.deepEqual(r.createdWorkspaces, []);
+  assert.deepEqual(Object.values(registry(home).tables.workspaces)[0].sessionIds, ['session-a']);
+  fs.rmSync(home, { recursive: true });
+  if (linked) fs.rmSync(link);
+  fs.rmSync(work, { recursive: true });
+});
+
+test('macOS: Desktop counts as running while any process from its bundle is alive', () => {
+  const d = desktopSettings({ desktop: {} }, 'darwin');
+  assert.equal(d.path, '/Applications/DeepSeek Harness.app');
+  assert.equal(d.processName, null);
+  const re = new RegExp(processPattern(d, 'darwin'));
+  assert.ok(re.test('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness'));
+  assert.ok(re.test('/Applications/DeepSeek Harness.app/Contents/Frameworks/DeepSeek Harness Helper.app/Contents/MacOS/DeepSeek Harness Helper --type=gpu'));
+  assert.ok(!re.test('tail -f /Users/x/Library/Logs/DeepSeek Harness/main.log'));
+  assert.ok(!re.test('/Applications/DeepSeek HarnessXapp/Contents/MacOS/x'), 'dots are escaped');
+  // an explicit processName still wins
+  assert.equal(processPattern(desktopSettings({ desktop: { processName: 'dsh-desktop' } }, 'darwin'), 'darwin'), 'dsh-desktop');
+  // a non-bundle path falls back to its file name, as on Windows/Linux
+  assert.equal(desktopSettings({ desktop: { path: '/opt/dsh/DeepSeek Harness' } }, 'linux').processName, 'DeepSeek Harness');
+});
+
+test('macOS launcher applet quotes paths for AppleScript and the shell', () => {
+  const src = appletSource('/opt/homebrew/opt/node@24/bin/node', '/Users/a "b"/skills\\x/open-desktop.mjs');
+  assert.equal(src, 'do shell script quoted form of "/opt/homebrew/opt/node@24/bin/node" & " " & quoted form of "/Users/a \\"b\\"/skills\\\\x/open-desktop.mjs" & " >/dev/null 2>&1 || true"');
+  assert.equal(appleString('中文 路径'), '"中文 路径"');
+});
+
+test('rewriting workspace.json keeps its owner-only permissions', { skip: process.platform === 'win32' }, () => {
+  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dsd-proj-')));
+  const home = fakeHome({ sessions: ['session-a'] });
+  const file = path.join(home, 'storages', 'workspace.json');
+  fs.chmodSync(file, 0o600);
+  queueAttach('session-a', work, home);
+  assert.equal(attachPending(home).attached, 1);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.join(home, 'dispatch-pending-attach.json')).mode & 0o777, 0o600);
+  fs.rmSync(home, { recursive: true });
+  fs.rmSync(work, { recursive: true });
 });

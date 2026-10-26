@@ -8,26 +8,27 @@
 //   node open-desktop.mjs                    attach, then launch Desktop
 //   node open-desktop.mjs --dry-run          report what would happen; change nothing
 //   node open-desktop.mjs --no-launch        attach only
-//   node open-desktop.mjs --create-shortcut  Windows: add desktop and Start-menu shortcuts that run this
-//                         [--shortcut-dir <dir>]   (or one shortcut in <dir>)
+//   node open-desktop.mjs --create-shortcut  Windows: add desktop and Start-menu shortcuts that run this;
+//                         [--shortcut-dir <dir>]   macOS: add a launcher app to ~/Applications (or <dir>)
 //
 // Desktop's location comes from the config's "desktop" section (see README); the log goes to
 // $DSH_HOME/dispatch-logs/open-desktop.log.
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dshHome } from './session-usage.mjs';
 import { attachPending, readPending } from './attach-workspaces.mjs';
-import { configPath, loadConfig } from './ds-task.mjs';
+import { configPath, loadConfig, stableNodePath } from './ds-task.mjs';
 
 const T = {
   zh: {
     title: 'DeepSeek Harness',
     pending: (n) => `待登记的派发会话：${n} 个`,
-    busy: (n, who) => `有 ${n} 个派发的会话还没登记到工作区。\n\n${who}正在运行，现在登记会被它覆盖。请先完全退出（包括托盘图标），再用这个命令或快捷方式打开。`,
+    busy: (n, who) => `有 ${n} 个派发的会话还没登记到工作区。\n\n${who}正在运行，现在登记会被它覆盖。请先完全退出（${process.platform === 'darwin' ? '⌘Q，或在 Dock 图标上右键选"退出"；只关窗口不算退出' : '包括托盘图标'}），再用这个命令或快捷方式打开。`,
     desktop: 'Desktop', web: (p) => `网页版（dsh web，端口 ${p}）`, sep: '、',
     problems: (n, errs) => `登记派发会话时有问题（已登记 ${n} 个）：\n\n${errs.join('\n')}`,
     attached: (r) => `已登记 ${r.attached} 个会话${r.createdWorkspaces.length ? `，新建工作区：${r.createdWorkspaces.join('、')}` : ''}`,
@@ -41,7 +42,7 @@ const T = {
   en: {
     title: 'DeepSeek Harness',
     pending: (n) => `Dispatched sessions waiting to be attached: ${n}`,
-    busy: (n, who) => `${n} dispatched session(s) are not in a workspace yet.\n\n${who} is running and would overwrite the change. Quit it fully (including the tray icon), then use this command or shortcut again.`,
+    busy: (n, who) => `${n} dispatched session(s) are not in a workspace yet.\n\n${who} is running and would overwrite the change. Quit it fully (${process.platform === 'darwin' ? '⌘Q, or Quit from its Dock icon; closing the window is not enough' : 'including the tray icon'}), then use this command or shortcut again.`,
     desktop: 'Desktop', web: (p) => `the web UI (dsh web, port ${p})`, sep: ' and ',
     problems: (n, errs) => `Problems while attaching dispatched sessions (${n} attached):\n\n${errs.join('\n')}`,
     attached: (r) => `Attached ${r.attached} session(s)${r.createdWorkspaces.length ? `; new workspaces: ${r.createdWorkspaces.join(', ')}` : ''}`,
@@ -58,24 +59,37 @@ export function desktopDefaults(platform = process.platform, env = process.env) 
   if (platform === 'win32') {
     return { path: path.join(env.LOCALAPPDATA || '', 'Programs', 'DeepSeek Harness', 'DeepSeek Harness.exe'), processName: 'DeepSeek Harness.exe' };
   }
-  if (platform === 'darwin') return { path: '/Applications/DeepSeek Harness.app', processName: 'DeepSeek Harness' };
+  // On macOS processName stays null: any process started from inside the bundle counts (see processPattern).
+  if (platform === 'darwin') return { path: '/Applications/DeepSeek Harness.app', processName: null };
   return { path: null, processName: null };
 }
 
-export function desktopSettings(cfg) {
+export function desktopSettings(cfg, platform = process.platform) {
   const set = Object.fromEntries(Object.entries(cfg.desktop || {}).filter(([, v]) => v != null && v !== ''));
-  const d = { ...desktopDefaults(), webPort: 3080, ...set };
-  if (!d.processName && d.path) d.processName = path.basename(d.path);
+  const d = { ...desktopDefaults(platform), webPort: 3080, ...set };
+  if (!d.processName && d.path && !isAppBundle(d.path, platform)) d.processName = path.basename(d.path);
   return d;
 }
 
-function processRunning(name) {
+const isAppBundle = (p, platform = process.platform) => platform === 'darwin' && /\.app\/?$/.test(p || '');
+
+// The `pgrep -f` pattern for "Desktop is running". For a macOS .app it matches every process whose
+// executable lives in the bundle: the main app, its Electron helpers, and anything it keeps alive after its
+// windows are closed (Dock / menu bar). Desktop has quit fully only when none of them is left.
+export function processPattern(d, platform = process.platform) {
+  if (d.processName) return d.processName;
+  if (!isAppBundle(d.path, platform)) return null;
+  return `${d.path.replace(/\/+$/, '')}/Contents/`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function processRunning(d) {
+  const name = processPattern(d);
   if (!name) return false;
   if (process.platform === 'win32') {
     const r = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${name}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8', windowsHide: true });
     return (r.stdout || '').toLowerCase().includes(`"${name.toLowerCase()}"`);
   }
-  return spawnSync('pgrep', ['-f', name]).status === 0;
+  return spawnSync('pgrep', ['-f', '--', name]).status === 0;
 }
 
 function portListening(port) {
@@ -145,6 +159,34 @@ function createShortcuts(exe, name, dir) {
   return r.stdout.trim().split(/\r?\n/);
 }
 
+// AppleScript string literal.
+export const appleString = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+// macOS: a small applet (osacompile) that runs this script, by default in ~/Applications so Spotlight and
+// Launchpad find it. Node and the script are absolute paths: apps get a minimal PATH, not the shell's.
+export function appletSource(node, script) {
+  return `do shell script quoted form of ${appleString(node)} & " " & quoted form of ${appleString(script)} & " >/dev/null 2>&1 || true"`;
+}
+
+function createMacApp(appPath, name, dir) {
+  const out = path.join(dir || path.join(os.homedir(), 'Applications'), `${name}.app`);
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.rmSync(out, { recursive: true, force: true });
+  const r = spawnSync('osacompile', ['-o', out, '-e', appletSource(stableNodePath(process.execPath), fileURLToPath(import.meta.url))], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error((r.stderr || 'osacompile failed').trim());
+  // Borrow Desktop's icon when it is installed.
+  if (appPath && fs.existsSync(appPath)) {
+    const icon = spawnSync('plutil', ['-extract', 'CFBundleIconFile', 'raw', path.join(appPath, 'Contents', 'Info.plist')], { encoding: 'utf8' });
+    const file = icon.status === 0 && icon.stdout.trim();
+    const src = file && path.join(appPath, 'Contents', 'Resources', file.endsWith('.icns') ? file : `${file}.icns`);
+    if (src && fs.existsSync(src)) {
+      fs.copyFileSync(src, path.join(out, 'Contents', 'Resources', 'applet.icns'));
+      spawnSync('touch', [out]);
+    }
+  }
+  return [out];
+}
+
 async function main() {
   const { values: o } = parseArgs({
     options: {
@@ -158,15 +200,17 @@ async function main() {
   const exeOk = Boolean(d.path && fs.existsSync(d.path));
 
   if (o['create-shortcut']) {
-    if (process.platform !== 'win32') throw new Error('--create-shortcut is Windows-only');
-    console.log(M.shortcut(createShortcuts(d.path, M.shortcutName, o['shortcut-dir'] && path.resolve(o['shortcut-dir']))));
+    const dir = o['shortcut-dir'] && path.resolve(o['shortcut-dir']);
+    if (process.platform === 'win32') console.log(M.shortcut(createShortcuts(d.path, M.shortcutName, dir)));
+    else if (process.platform === 'darwin') console.log(M.shortcut(createMacApp(d.path, M.shortcutName, dir)));
+    else throw new Error('--create-shortcut is only available on Windows and macOS');
     return 0;
   }
 
   const n = readPending().length;
   const who = [];
   if (n || o['dry-run']) {
-    if (processRunning(d.processName)) who.push(M.desktop);
+    if (processRunning(d)) who.push(M.desktop);
     if (await portListening(d.webPort)) who.push(M.web(d.webPort));
   }
   if (o['dry-run']) {

@@ -43,7 +43,7 @@ Claude 把任务写成任务书，用 `ds-task.mjs` 交给 dsh；dsh 作为一�
 - **会话被锁时自动新开**：dsh 每个会话同一时间只允许一个写入方。接续时如果报 `already owned by an active write handle`，自动改为新开一次，当前会话保持不变；会话已不存在时新开并设为当前会话。
 - **用量和费用估算**：从 dsh 会话日志里读出本次的请求数、输入/缓存命中/输出 tokens，按配置的单价和高峰/闲时段估算人民币费用。
 - **编码安全**：任务文本按原始 UTF-8 字节写进 dsh 的 stdin，事件流（`--json`）原样落盘，不经过 shell 的编码转换。
-- **跨平台**：纯 Node，无依赖，Windows / macOS / Linux 通用。dsh 的位置从 PATH 或 `npm root -g` 自动查找。
+- **跨平台**：纯 Node，无依赖，Windows / macOS / Linux 通用。dsh 的位置从 PATH 或 `npm root -g` 自动查找；运行脚本的 Node 低于 22.19 时，自动改用 PATH 或 Homebrew 里更新的 Node 去跑 dsh（见下文 macOS 一节）。
 - **在 Desktop 里按项目显示**：派发的会话会排队登记，用 `open-desktop.mjs` 打开 Desktop 时自动挂到对应文件夹的工作区，不再全部堆在"未分组"里。见下文。
 - **日志**：每次运行写到 `~/.dsh/dispatch-logs/<时间戳>/`：`task.md`、`events.jsonl`、`answer.md`、`stderr.log`、`patch.yml`。
 
@@ -68,6 +68,26 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑�
 
 完整参数见 `--help`。
 
+### macOS
+
+实测环境：macOS 26（Apple Silicon，APFS 默认不区分大小写）。
+
+```bash
+brew install node@24                      # keg-only，不会自动加进 PATH
+export PATH="/opt/homebrew/opt/node@24/bin:$PATH"   # 想让终端默认用它，可写进 ~/.zprofile
+npm install -g @deepseek-ai/dsh
+git clone https://github.com/jxnxkx/claude-dsh-native.git
+cd claude-dsh-native
+node scripts/install.mjs
+node ~/.claude/skills/dsh-native/open-desktop.mjs --create-shortcut
+```
+
+- **Node 版本**：dsh 在 Node 22.19 以下会**不输出任何内容、直接 exit 0**。如果 PATH 里更早出现的是旧 Node（比如官方安装包放在 `/usr/local/bin` 的 22.16，排在 Homebrew 前面），Claude Code 运行 `node ds-task.mjs` 时用的就是它。脚本会自动换用 `DSH_NODE` 环境变量、配置里的 `nodePath`，或者 PATH / `/opt/homebrew/opt/node@24/bin/node` 等常见位置里 22.19 以上的 Node 去跑 dsh（优先选 Homebrew 的 `opt/` 稳定链接，`brew upgrade` 后不会失效）；都找不到时报错，不会假装成功。
+- **启动入口**：`--create-shortcut` 在 `~/Applications` 生成「DeepSeek Harness（含派发会话）.app」（用 `osacompile` 生成的小程序，图标借用 Desktop 的），可以从启动台、Spotlight 打开，或拖进 Dock。`--shortcut-dir ~/Desktop` 可以改放到桌面。它记录的是生成时的 Node 和脚本绝对路径，挪动 skill 目录后重新生成一次即可。
+- **完全退出 Desktop**：关窗口（红色按钮）后 Desktop 的所有进程（主进程、内置的 dsh 后端、Electron 辅助进程）都还在，仍然占着会话锁，也会覆盖 `workspace.json`。要用 ⌘Q，或在 Dock 图标上右键选"退出"。实测没有菜单栏图标。启动器把可执行文件位于 `/Applications/DeepSeek Harness.app/Contents/` 下的任何进程都算作"在运行"；Desktop 内置后端监听的是随机端口，不是 `webPort`。
+- **提醒**：启动器从 .app 打开时没有终端窗口，提示用 `osascript display dialog` 弹出（20 秒后自动关闭）。
+- **路径大小写**：`--workdir` 写成 `~/project/myproj` 还是 `~/Project/MyProj` 都一样。脚本用 `fs.realpathSync.native` 取磁盘上的真实大小写（和 dsh 自己登记工作区用的 `fs.realpath` 一致），接续会话和挂工作区都按它匹配，不会因为大小写不同而重复新建。
+
 ## 配置 API Key
 
 **dsh 0.2.1 起，headless 默认不读取 Desktop/网页版保存的凭据**（`~/.dsh/.credentials.yaml`），只读环境变量和 `.env`。三选一：
@@ -85,6 +105,8 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑�
      disabled: false
    ```
 
+**Desktop 用 DeepSeek 账号登录、没有填 API Key 时**（凭据文件里只有账号授权，没有 `DEEPSEEK_API_KEY`），前三种都拿不到 Key。这时把配置里的 `agent.provider` 改成 `deepseek-account`（和 Desktop 自己用的一样），并打开 `reuseSavedCredentials`，headless 就会复用 Desktop 的登录。计费走账号，费用估算仍按配置里的 API 单价，可能和实际扣费不一致。
+
 没配好时，输出里会有一行提示。脚本本身从不读取或打印 Key。
 
 ## 配置文件
@@ -100,7 +122,8 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑�
 | `maxToolLines` | `40` | 汇总里列出的工具调用条数 |
 | `contextWarnTokens` | `200000` | 当前上下文超过这个值时，输出里提示可以 `--new-session`。装了上下文折叠或回放插件的话，可以调高，或设为 `0` 关掉 |
 | `attachToWorkspaces` | `true` | 把派发的会话记进待登记队列，供 `open-desktop.mjs` 挂到 Desktop 的工作区 |
-| `desktop` | 见下文 | `path`（Desktop 程序位置）、`processName`（用来判断它是否在运行）、`webPort`（`dsh web` 的端口，默认 3080）。值为 `null` 时用平台默认 |
+| `nodePath` | `null` | 用来跑 dsh 的 Node（需 22.19+）。`null` 时：运行脚本的 Node 够新就用它，否则从 PATH 和常见安装位置找。环境变量 `DSH_NODE` 优先 |
+| `desktop` | 见下文 | `path`（Desktop 程序位置）、`processName`（用来判断它是否在运行；macOS 上默认留空，按 .app 包路径判断）、`webPort`（`dsh web` 的端口，默认 3080）。值为 `null` 时用平台默认 |
 | `pricing` | 见样例 | 单价（人民币/百万 tokens，分 `peak` / `offPeak`，各含 `cacheHit` / `cacheMiss` / `output`）、`timeZone`、`peakDays`、`peakHours`、`holidays`、`checked`（核对日期） |
 
 默认单价按 2026-10-24 的[官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)：闲时 命中 0.02、未命中 1、输出 4；高峰（北京时间工作日 9–12 点、14–18 点）翻倍。价格变了只改配置文件。
@@ -119,6 +142,7 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑�
 ## 会话锁和 GUI（实测结论）
 
 - 每个会话同一时间只能有一个写入方。**Desktop 或网页版只要点开过某个会话，就一直占着它的写入锁**：切到别的会话、关掉网页标签页都不释放，只有完全退出 Desktop（包括托盘图标）或停掉 `dsh web` 服务才释放。这时派发会自动新开会话（任务照样完成，只是这次没有接续）。
+- macOS 实测：只是点开会话不一定马上占锁，在会话里发过消息后就一直占着（持有者是 Desktop 内置的 dsh 后端进程），⌘Q 后释放。锁用的是 `flock(2)`，dsh 自带 darwin-arm64 的原生插件，不用另外装。
 - **Desktop 不会实时刷新**别的进程写进同一会话的内容，要退出重开才看得到；网页版刷新页面就能看到。
 - 建议：让 Claude 连续派发时，不要在 GUI 里点开那个项目的当前会话；想看过程，等一批任务做完再打开，看完后退出，下次派发前再接续。
 
@@ -129,21 +153,21 @@ Desktop 按工作区（文件夹）分组显示会话，名单存在 `~/.dsh/sto
 本项目的做法：
 
 1. `ds-task.mjs` 每次跑完，把 `{sessionId, workDir}` 追加到 `~/.dsh/dispatch-pending-attach.json`。
-2. **先完全退出 Desktop（包括托盘图标），并停掉 `dsh web`**，然后运行：
+2. **先完全退出 Desktop（Windows 包括托盘图标；macOS 要 ⌘Q，关窗不算），并停掉 `dsh web`**，然后运行：
 
    ```bash
    node ~/.claude/skills/dsh-native/open-desktop.mjs
    ```
 
-   它按规范化后的路径找到对应的工作区（Windows 上不区分大小写），把会话插到最前面；文件夹还没有工作区就新建一个（标题取文件夹名，排在最前）；已经在某个工作区里的会话跳过。写入前先备份为 `workspace.json.bak-attach`，再用临时文件加重命名的方式原子写入。最后启动 Desktop。
+   它按规范化后的路径找到对应的工作区（两边都取 `realpath`，所以大小写写法不同、经过软链接的路径都能匹配；Windows 上另外不区分大小写），把会话插到最前面；文件夹还没有工作区就新建一个（标题取文件夹名，排在最前）；已经在某个工作区里的会话跳过。写入前先备份为 `workspace.json.bak-attach`，再用临时文件加重命名的方式原子写入，保留原文件的权限（dsh 在 macOS/Linux 上把它设为仅本人可读写）。最后启动 Desktop。
 
    - `--dry-run`：只报告有几个待登记、Desktop/网页版是否在运行、会启动哪个程序，不做任何改动。
    - `--no-launch`：只登记，不启动。
-   - `--create-shortcut`（仅 Windows）：在桌面和开始菜单生成"DeepSeek Harness（含派发会话）"快捷方式，以后从这里打开即可。
+   - `--create-shortcut`：Windows 在桌面和开始菜单生成"DeepSeek Harness（含派发会话）"快捷方式；macOS 在 `~/Applications` 生成同名 .app（见上文 macOS 一节）。以后从这里打开即可。
 
-为什么必须先退出：Desktop 和 `dsh web` 运行时把名单放在内存里，下次变动时整份写回文件，也不监听外部修改，所以这时改了也会被冲掉。启动器检测到它们在运行时（按进程名和 `webPort` 端口判断）只提醒，不登记，照常启动 Desktop。日志在 `~/.dsh/dispatch-logs/open-desktop.log`。
+为什么必须先退出：Desktop 和 `dsh web` 运行时把名单放在内存里，下次变动时整份写回文件，也不监听外部修改，所以这时改了也会被冲掉。启动器检测到它们在运行时（按进程名或 macOS 的 .app 包路径，以及 `webPort` 端口判断）只提醒，不登记，照常启动 Desktop。日志在 `~/.dsh/dispatch-logs/open-desktop.log`。
 
-Desktop 的位置默认是：Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`，macOS `/Applications/DeepSeek Harness.app`；Linux 没有默认值，需要在配置的 `desktop.path` 里填。只在 Windows 上实测过：退出 Desktop 后用启动器打开，新建的工作区和挂进去的会话都正常显示。macOS 和 Linux 的默认路径和进程名未经验证，不对的话请在配置里改。
+Desktop 的位置默认是：Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`，macOS `/Applications/DeepSeek Harness.app`；Linux 没有默认值，需要在配置的 `desktop.path` 里填。Windows 和 macOS 上都实测过：退出 Desktop 后用启动器打开，新建的工作区和挂进去的会话都正常显示。Linux 的默认值未经验证，请在配置里填。
 
 ## 实测效果
 
@@ -161,6 +185,8 @@ Desktop 的位置默认是：Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\D
 
 - `@deepseek-ai/dsh` 0.2.1-rc.3（命令行版与 Desktop 同版本），模型 `deepseek-flash`（DeepSeek-V4.1-Flash-1017）
 - Node 24.15，Windows 10（PowerShell 5.1 与 Git Bash）
+- Node 24.22.1（Homebrew `node@24`）和 22.16（只运行脚本，dsh 自动改用 24），macOS 26.5（Apple Silicon，APFS 不区分大小写），Desktop 0.2.1-rc.3（`com.deepseek.dsh`），账号登录（`deepseek-account`）
+  - 实测：新开、接续（`--workdir` 大小写不同）、两个进程抢同一会话、Desktop 占用会话时自动新开；退出 Desktop 后用启动入口登记并打开，会话出现在对应工作区下
 
 dsh 是开发者预览版，事件格式、profile 插件 id、会话日志格式都可能在后续版本变化。会话日志是 zstd 压缩的，读取需要 Node 22.15+ / 23.8+ 自带的 zstd 支持。
 

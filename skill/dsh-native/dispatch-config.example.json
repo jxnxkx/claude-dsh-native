@@ -10,6 +10,7 @@
   "maxToolLines": 40,
   "contextWarnTokens": 200000,
   "attachToWorkspaces": true,
+  "nodePath": null,
   "desktop": {
     "path": null,
     "processName": null,
