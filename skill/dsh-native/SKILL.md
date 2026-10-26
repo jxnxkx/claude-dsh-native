@@ -48,7 +48,7 @@ description: 由 Claude 做顶层规划、拆分和验收，把边界清楚的�
 ## 在 Desktop 里按项目显示
 
 - Desktop 按工作区（文件夹）分组显示会话，名单在 `~/.dsh/storages/workspace.json`。只有 Desktop 或网页版自己建会话时才会写进名单，headless 不会，所以派发的会话默认出现在"未分组"里。
-- 因此 `ds-task.mjs` 每次跑完都把会话记进 `~/.dsh/dispatch-pending-attach.json`（配置 `attachToWorkspaces` 可关）。用户想在 Desktop 里看时，让用户**先完全退出 Desktop 和 `dsh web`**（macOS 上关窗不算退出，要 ⌘Q），再用 `node open-desktop.mjs`（或 `--create-shortcut` 生成的入口：Windows 的快捷方式、macOS `~/Applications` 里的 .app）打开：它先把待登记的会话挂到对应文件夹的工作区（没有就新建），再启动 Desktop。
+- 因此 `ds-task.mjs` 每次跑完都把会话记进 `~/.dsh/dispatch-pending-attach.json`（配置 `attachToWorkspaces` 可关）。用户想在 Desktop 里看时，让用户**先完全退出 Desktop 和 `dsh web`**（macOS 上关窗不算退出，要 ⌘Q），再用 `node open-desktop.mjs`（或 `--create-shortcut` 生成的入口：Windows 的快捷方式、macOS `~/Applications` 里的 .app）打开：它先把待登记的会话挂到对应文件夹的工作区（没有就新建），再启动 Desktop。单独运行 `attach-workspaces.mjs` 也会在 Desktop 或 `dsh web` 运行时拒绝登记；要查看会登记什么用 `--dry-run`，不要自己加 `--force`。
 - Desktop 或 `dsh web` 正在运行时不能登记：它们把名单放在内存里，下次变动时整份写回文件，会冲掉外部的修改。这时启动器只提醒、不登记。不要在 Desktop 运行时手动改 `workspace.json`。登记前的备份是 `workspace.json.bak-attach`。
 
 ## 任务书模板

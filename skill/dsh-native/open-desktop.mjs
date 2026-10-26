@@ -14,7 +14,6 @@
 // Desktop's location comes from the config's "desktop" section (see README); the log goes to
 // $DSH_HOME/dispatch-logs/open-desktop.log.
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -22,7 +21,10 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dshHome } from './session-usage.mjs';
 import { attachPending, readPending } from './attach-workspaces.mjs';
+import { blockingApps, desktopSettings } from './desktop-status.mjs';
 import { configPath, loadConfig, stableNodePath } from './ds-task.mjs';
+
+export { desktopDefaults, desktopSettings, processPattern } from './desktop-status.mjs';
 
 const T = {
   zh: {
@@ -54,54 +56,6 @@ const T = {
     shortcutName: 'DeepSeek Harness (with dispatched sessions)',
   },
 };
-
-export function desktopDefaults(platform = process.platform, env = process.env) {
-  if (platform === 'win32') {
-    return { path: path.join(env.LOCALAPPDATA || '', 'Programs', 'DeepSeek Harness', 'DeepSeek Harness.exe'), processName: 'DeepSeek Harness.exe' };
-  }
-  // On macOS processName stays null: any process started from inside the bundle counts (see processPattern).
-  if (platform === 'darwin') return { path: '/Applications/DeepSeek Harness.app', processName: null };
-  return { path: null, processName: null };
-}
-
-export function desktopSettings(cfg, platform = process.platform) {
-  const set = Object.fromEntries(Object.entries(cfg.desktop || {}).filter(([, v]) => v != null && v !== ''));
-  const d = { ...desktopDefaults(platform), webPort: 3080, ...set };
-  if (!d.processName && d.path && !isAppBundle(d.path, platform)) d.processName = path.basename(d.path);
-  return d;
-}
-
-const isAppBundle = (p, platform = process.platform) => platform === 'darwin' && /\.app\/?$/.test(p || '');
-
-// The `pgrep -f` pattern for "Desktop is running". For a macOS .app it matches every process whose
-// executable lives in the bundle: the main app, its Electron helpers, and anything it keeps alive after its
-// windows are closed (Dock / menu bar). Desktop has quit fully only when none of them is left.
-export function processPattern(d, platform = process.platform) {
-  if (d.processName) return d.processName;
-  if (!isAppBundle(d.path, platform)) return null;
-  return `${d.path.replace(/\/+$/, '')}/Contents/`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function processRunning(d) {
-  const name = processPattern(d);
-  if (!name) return false;
-  if (process.platform === 'win32') {
-    const r = spawnSync('tasklist', ['/FI', `IMAGENAME eq ${name}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8', windowsHide: true });
-    return (r.stdout || '').toLowerCase().includes(`"${name.toLowerCase()}"`);
-  }
-  return spawnSync('pgrep', ['-f', '--', name]).status === 0;
-}
-
-function portListening(port) {
-  if (!port) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const s = net.connect({ host: '127.0.0.1', port });
-    const done = (v) => { s.destroy(); resolve(v); };
-    s.setTimeout(800, () => done(false));
-    s.once('connect', () => done(true));
-    s.once('error', () => done(false));
-  });
-}
 
 function log(msg) {
   try {
@@ -208,11 +162,7 @@ async function main() {
   }
 
   const n = readPending().length;
-  const who = [];
-  if (n || o['dry-run']) {
-    if (processRunning(d)) who.push(M.desktop);
-    if (await portListening(d.webPort)) who.push(M.web(d.webPort));
-  }
+  const who = n || o['dry-run'] ? (await blockingApps(d)).map((a) => (a.kind === 'web' ? M.web(a.port) : M.desktop)) : [];
   if (o['dry-run']) {
     console.log([M.pending(n), M.running(who.join(M.sep)), exeOk ? M.launching(d.path) : M.noExe(d.path), M.dry].join('\n'));
     return 0;

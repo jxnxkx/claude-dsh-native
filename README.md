@@ -167,6 +167,12 @@ Desktop 按工作区（文件夹）分组显示会话，名单存在 `~/.dsh/sto
 
 为什么必须先退出：Desktop 和 `dsh web` 运行时把名单放在内存里，下次变动时整份写回文件，也不监听外部修改，所以这时改了也会被冲掉。启动器检测到它们在运行时（按进程名或 macOS 的 .app 包路径，以及 `webPort` 端口判断）只提醒，不登记，照常启动 Desktop。日志在 `~/.dsh/dispatch-logs/open-desktop.log`。
 
+也可以只登记、不启动，直接运行 `node ~/.claude/skills/dsh-native/attach-workspaces.mjs`。它做同样的检查：Desktop 或 `dsh web` 在运行时拒绝登记（退出码 3），待登记列表和 `workspace.json` 都不动。
+
+- `-h` / `--help`：只打印用法。不认识的参数会报错退出（退出码 2），不会登记。
+- `--dry-run`：输出会登记哪些会话、新建哪些工作区，以及现在被谁挡住（`blockedBy`），不写任何文件。
+- `--force`：跳过运行检查，强制登记。**有风险**：如果 Desktop 或 `dsh web` 其实在运行，它下次改动名单时会用内存里的旧名单整份覆盖 `workspace.json`，这次登记就丢了；而待登记列表已经清空，这些会话不会再自动重登记，只能手动把它们加回 `~/.dsh/dispatch-pending-attach.json`。只在确认检测误报时使用，比如改了 `webPort` 而端口被别的程序占用。
+
 Desktop 的位置默认是：Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`，macOS `/Applications/DeepSeek Harness.app`；Linux 没有默认值，需要在配置的 `desktop.path` 里填。Windows 和 macOS 上都实测过：退出 Desktop 后用启动器打开，新建的工作区和挂进去的会话都正常显示。Linux 的默认值未经验证，请在配置里填。
 
 ## 实测效果

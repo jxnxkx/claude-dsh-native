@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { attachPending, queueAttach, readPending } from '../skill/dsh-native/attach-workspaces.mjs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { attachPending, cli, queueAttach, readPending } from '../skill/dsh-native/attach-workspaces.mjs';
 import { appleString, appletSource, desktopSettings, processPattern } from '../skill/dsh-native/open-desktop.mjs';
 
 function fakeHome({ workspaces = {}, sessions = [] } = {}) {
@@ -143,4 +145,98 @@ test('rewriting workspace.json keeps its owner-only permissions', { skip: proces
   assert.equal(fs.statSync(path.join(home, 'dispatch-pending-attach.json')).mode & 0o777, 0o600);
   fs.rmSync(home, { recursive: true });
   fs.rmSync(work, { recursive: true });
+});
+
+// Every file under the fake dsh home with its content, to prove a command changed nothing.
+function snapshot(home) {
+  const out = {};
+  for (const f of fs.readdirSync(home, { recursive: true })) {
+    const p = path.join(home, f);
+    if (fs.statSync(p).isFile()) out[f] = fs.readFileSync(p, 'utf8');
+  }
+  return out;
+}
+
+function queuedHome() {
+  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dsd-proj-')));
+  const home = fakeHome({ sessions: ['session-a'] });
+  queueAttach('session-a', work, home);
+  return { home, cleanup: () => { fs.rmSync(home, { recursive: true }); fs.rmSync(work, { recursive: true }); } };
+}
+
+const script = fileURLToPath(new URL('../skill/dsh-native/attach-workspaces.mjs', import.meta.url));
+const runScript = (home, args) => spawnSync(process.execPath, [script, ...args], {
+  encoding: 'utf8',
+  env: { ...process.env, DSH_HOME: home, DS_DISPATCH_CONFIG: path.join(home, 'no-config.json') },
+});
+
+// Regression: `--help` used to be ignored and ran a real attach against ~/.dsh.
+test('the script prints help and changes nothing for -h/--help', () => {
+  const { home, cleanup } = queuedHome();
+  const before = snapshot(home);
+  for (const flag of ['--help', '-h']) {
+    const r = runScript(home, [flag]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Usage: node attach-workspaces\.mjs/);
+  }
+  assert.deepEqual(snapshot(home), before);
+  cleanup();
+});
+
+test('the script rejects unknown options and arguments without attaching', () => {
+  const { home, cleanup } = queuedHome();
+  const before = snapshot(home);
+  for (const args of [['--bogus'], ['extra'], ['--dry-run', '--forse']]) {
+    const r = runScript(home, args);
+    assert.equal(r.status, 2, `${args}: ${r.stderr}`);
+    assert.match(r.stderr, /Usage:/);
+  }
+  assert.deepEqual(snapshot(home), before);
+  cleanup();
+});
+
+const quiet = { out: () => { }, err: () => { } };
+
+test('refuses to attach while Desktop or dsh web is running', async () => {
+  const { home, cleanup } = queuedHome();
+  const before = snapshot(home);
+  const msgs = [];
+  const desktop = { isProcessRunning: () => true, isPortListening: () => false };
+  assert.equal(await cli([], { home, config: { lang: 'en' }, probes: desktop, ...quiet, err: (s) => msgs.push(s) }), 3);
+  assert.match(msgs[0], /Desktop is running/);
+  let port;
+  const web = { isProcessRunning: () => false, isPortListening: (p) => { port = p; return true; } };
+  assert.equal(await cli([], { home, config: { desktop: { webPort: 4000 } }, probes: web, ...quiet }), 3);
+  assert.equal(port, 4000);
+  assert.deepEqual(snapshot(home), before);
+  cleanup();
+});
+
+test('--force skips the running check; attaches when nothing is running', async () => {
+  const busy = { isProcessRunning: () => { throw new Error('probed despite --force'); }, isPortListening: () => true };
+  const a = queuedHome();
+  assert.equal(await cli(['--force'], { home: a.home, config: {}, probes: busy, ...quiet }), 0);
+  assert.deepEqual(readPending(a.home), []);
+  a.cleanup();
+  const b = queuedHome();
+  const lines = [];
+  const idle = { isProcessRunning: () => false, isPortListening: () => false };
+  assert.equal(await cli([], { home: b.home, config: {}, probes: idle, ...quiet, out: (s) => lines.push(s) }), 0);
+  assert.equal(JSON.parse(lines[0]).attached, 1);
+  assert.deepEqual(readPending(b.home), []);
+  b.cleanup();
+});
+
+test('--dry-run reports what would be attached and what blocks it, writing nothing', async () => {
+  const { home, cleanup } = queuedHome();
+  const before = snapshot(home);
+  const lines = [];
+  const desktop = { isProcessRunning: () => true, isPortListening: () => false };
+  assert.equal(await cli(['--dry-run'], { home, config: {}, probes: desktop, ...quiet, out: (s) => lines.push(s) }), 0);
+  const r = JSON.parse(lines[0]);
+  assert.equal(r.dryRun, true);
+  assert.equal(r.attached, 1);
+  assert.deepEqual(r.blockedBy, [{ kind: 'desktop' }]);
+  assert.deepEqual(snapshot(home), before);
+  cleanup();
 });

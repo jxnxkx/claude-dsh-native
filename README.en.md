@@ -169,6 +169,12 @@ What this project does:
 
 Why quit first: while running, Desktop and `dsh web` keep the list in memory, do not watch the file, and rewrite the whole file on their next change, so an outside edit would be lost. When the launcher sees them running (by process name or, on macOS, the .app bundle path, and the `webPort` port), it only warns and launches Desktop without attaching. Log: `~/.dsh/dispatch-logs/open-desktop.log`.
 
+To attach without launching anything, run `node ~/.claude/skills/dsh-native/attach-workspaces.mjs`. It makes the same check: while Desktop or `dsh web` is running it refuses (exit code 3) and leaves the queue and `workspace.json` untouched.
+
+- `-h` / `--help`: print usage only. Unknown arguments are an error (exit code 2) and attach nothing.
+- `--dry-run`: print which sessions would be attached, which workspaces created, and what is blocking the run right now (`blockedBy`); write nothing.
+- `--force`: skip the running check. **Risky**: if Desktop or `dsh web` is in fact running, its next change to the list rewrites `workspace.json` from its in-memory copy and this attach is lost, while the queue has already been emptied, so those sessions are not retried unless you add them back to `~/.dsh/dispatch-pending-attach.json` by hand. Use it only for a confirmed false positive, e.g. another program holding `webPort`.
+
 Default Desktop locations: Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`, macOS `/Applications/DeepSeek Harness.app`; Linux has no default, set `desktop.path`. Tested on Windows and macOS: after quitting Desktop and opening it through the launcher, new workspaces and attached sessions showed up correctly. The Linux defaults are unverified; set them in the config.
 
 ## Observed effect
