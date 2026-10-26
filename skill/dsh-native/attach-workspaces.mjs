@@ -6,14 +6,31 @@
 // $DSH_HOME/dispatch-pending-attach.json; this module moves the queue into workspace.json.
 //
 // Run it only while Desktop and `dsh web` are closed: they keep the registry in memory and rewrite the
-// whole file on their next change, dropping edits made from outside. open-desktop.mjs checks that first.
+// whole file on their next change, dropping edits made from outside. The command line refuses to attach
+// while either is running (unless --force); open-desktop.mjs makes the same check.
 //
 //   node attach-workspaces.mjs   -> {"attached":n,"createdWorkspaces":[...],"kept":n,"errors":[...]}
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dshHome } from './session-usage.mjs';
+import { blockingApps, desktopSettings } from './desktop-status.mjs';
+
+const USAGE = `Usage: node attach-workspaces.mjs [options]
+
+Files the sessions queued in $DSH_HOME/dispatch-pending-attach.json under their folders' workspaces in
+$DSH_HOME/storages/workspace.json, and prints {"attached","createdWorkspaces","kept","errors"} as JSON.
+Refuses to run while DeepSeek Harness Desktop or \`dsh web\` (desktop.webPort, default 3080) is running:
+they would overwrite the change, and the queue would already be emptied.
+
+  --dry-run         print what would be attached; write nothing
+  --force           skip the Desktop / dsh web check (the change may be lost)
+  --config <file>   dispatch config (for the desktop section); default $DSH_HOME/dispatch-config.json
+  -h, --help        show this help
+
+Exit codes: 0 ok, 1 workspace.json unreadable, 2 bad arguments, 3 Desktop or dsh web running.`;
 
 export const pendingPath = (home = dshHome()) => path.join(home, 'dispatch-pending-attach.json');
 
@@ -72,7 +89,8 @@ function sessionLogExists(sessionsRoot, id) {
   return false;
 }
 
-export function attachPending(home = dshHome()) {
+// With dryRun, works out the same result but writes nothing (no backup, registry or queue change).
+export function attachPending(home = dshHome(), { dryRun = false } = {}) {
   const result = { attached: 0, createdWorkspaces: [], kept: 0, errors: [] };
   const pending = readPending(home);
   if (!pending.length) return result;
@@ -90,7 +108,7 @@ export function attachPending(home = dshHome()) {
     result.kept = pending.length;
     return result;
   }
-  fs.copyFileSync(registryPath, `${registryPath}.bak-attach`);
+  if (!dryRun) fs.copyFileSync(registryPath, `${registryPath}.bak-attach`);
 
   const owned = new Set(Object.values(workspaces).flatMap((w) => w.sessionIds || []));
   const keep = [];
@@ -121,14 +139,66 @@ export function attachPending(home = dshHome()) {
     owned.add(sessionId);
     result.attached += 1;
   }
-  if (result.attached) writeJsonAtomic(registryPath, registry);
-  writeJsonAtomic(pendingPath(home), keep);
+  if (!dryRun) {
+    if (result.attached) writeJsonAtomic(registryPath, registry);
+    writeJsonAtomic(pendingPath(home), keep);
+  }
   result.kept = keep.length;
   return result;
 }
 
+const BUSY = {
+  zh: (who) => `${who}正在运行，没有登记：它会用内存里的名单覆盖 workspace.json。请先完全退出（包括托盘图标；macOS 要 ⌘Q）再运行；确实要登记可加 --force。`,
+  en: (who) => `${who} is running, nothing attached: it would overwrite workspace.json from memory. Quit it fully (including the tray icon; ⌘Q on macOS) and rerun, or pass --force.`,
+};
+const WHO = {
+  zh: { desktop: 'Desktop', web: (p) => `网页版（dsh web，端口 ${p}）`, sep: '、' },
+  en: { desktop: 'Desktop', web: (p) => `the web UI (dsh web, port ${p})`, sep: ' and ' },
+};
+
+// The command line, returning the exit code. `deps` lets tests replace the dsh home, config and probes.
+export async function cli(argv, deps = {}) {
+  const { home = dshHome(), probes, out = console.log, err = (s) => process.stderr.write(`${s}\n`) } = deps;
+  let o;
+  try {
+    ({ values: o } = parseArgs({
+      args: argv,
+      options: { help: { type: 'boolean', short: 'h' }, 'dry-run': { type: 'boolean' }, force: { type: 'boolean' }, config: { type: 'string' } },
+    }));
+  } catch (e) {
+    err(`attach-workspaces: ${e.message}\n\n${USAGE}`);
+    return 2;
+  }
+  if (o.help) {
+    out(USAGE);
+    return 0;
+  }
+  // Imported here: ds-task.mjs imports this module.
+  let cfg = deps.config;
+  if (!cfg) {
+    const { configPath, loadConfig } = await import('./ds-task.mjs');
+    cfg = loadConfig(configPath(o.config));
+  }
+
+  const dryRun = Boolean(o['dry-run']);
+  let apps = [];
+  if (readPending(home).length && !o.force) {
+    apps = await blockingApps(desktopSettings(cfg), probes);
+    if (apps.length && !dryRun) {
+      const W = WHO[cfg.lang] || WHO.zh;
+      err((BUSY[cfg.lang] || BUSY.zh)(apps.map((a) => (a.kind === 'web' ? W.web(a.port) : W.desktop)).join(W.sep)));
+      return 3;
+    }
+  }
+  const r = attachPending(home, { dryRun });
+  // A dry run also reports what would block the real run.
+  out(JSON.stringify(dryRun ? { dryRun: true, blockedBy: apps, ...r } : r));
+  return r.errors.some((e) => e.startsWith('workspace.json')) ? 1 : 0;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) {
-  const r = attachPending();
-  console.log(JSON.stringify(r));
-  process.exitCode = r.errors.some((e) => e.startsWith('workspace.json')) ? 1 : 0;
+  cli(process.argv.slice(2)).then(
+    (code) => { process.exitCode = code; },
+    (e) => { process.stderr.write(`attach-workspaces: ${e.message}\n`); process.exitCode = 1; },
+  );
 }
