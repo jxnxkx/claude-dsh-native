@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dshHome, sessionUsage } from './session-usage.mjs';
@@ -33,6 +33,8 @@ export const DEFAULT_CONFIG = {
   contextWarnTokens: 200000,
   // Queue dispatched sessions for open-desktop.mjs, which files them under Desktop's workspaces.
   attachToWorkspaces: true,
+  // Node used to run dsh; null = this node if new enough, else a newer one from PATH or common locations.
+  nodePath: null,
   pricing: {
     currency: 'CNY',
     unit: 'per 1M tokens',
@@ -105,7 +107,9 @@ const HELP = `Usage: node ds-task.mjs --workdir <dir> (--task <text> | --task-fi
   --mode <mode>          read-only | workspace-write | danger-full-access (default: config, else workspace-write)
   --config <file>        config file (default: $DS_DISPATCH_CONFIG, else ~/.dsh/dispatch-config.json)
   --max-tool-lines <n>   tool calls to list in the summary
-  -h, --help             show this help`;
+  -h, --help             show this help
+
+Environment: DSH_BIN (dsh's lib/bin.js), DSH_NODE (Node 22.19+ used to run dsh), DSH_HOME, DS_DISPATCH_CONFIG.`;
 
 // ---------- config ----------
 
@@ -214,11 +218,51 @@ export function findDshBin() {
   throw new Error('dsh not found on PATH or under `npm root -g`. Install it: npm install -g @deepseek-ai/dsh (or set DSH_BIN to its lib/bin.js)');
 }
 
+// dsh needs Node 22.19+ or 24+; older ones exit 0 without output. Claude Code may run this script with an
+// older `node` that comes first on PATH (e.g. /usr/local/bin ahead of Homebrew's keg-only node@24), so pick a
+// suitable node for dsh: $DSH_NODE > config nodePath > this node > PATH > common install locations.
+export function nodeSupportsDsh(version) {
+  const [major, minor] = String(version).replace(/^v/, '').split('.').map(Number);
+  return major > 22 || (major === 22 && minor >= 19);
+}
+
+const NODE_LOCATIONS = ['/opt/homebrew/opt/node@24/bin/node', '/opt/homebrew/bin/node', '/usr/local/opt/node@24/bin/node', '/usr/local/bin/node'];
+
+// Homebrew's versioned Cellar path disappears on `brew upgrade`; prefer its stable opt/ link.
+export function stableNodePath(p) {
+  const m = /^(.*)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/.exec(p);
+  const opt = m && `${m[1]}/opt/${m[2]}/bin/node`;
+  return opt && fs.existsSync(opt) ? opt : p;
+}
+
+export function findDshNode(cfg = {}) {
+  const explicit = process.env.DSH_NODE || cfg.nodePath;
+  if (explicit) {
+    if (fs.existsSync(explicit)) return explicit;
+    throw new Error(`${process.env.DSH_NODE ? 'DSH_NODE' : 'nodePath'} points to a missing file: ${explicit}`);
+  }
+  if (nodeSupportsDsh(process.versions.node)) return stableNodePath(process.execPath);
+  const name = process.platform === 'win32' ? 'node.exe' : 'node';
+  const fromPath = (process.env.PATH || '').split(path.delimiter).filter(Boolean).map((d) => path.join(d, name));
+  const seen = new Set([process.execPath]);
+  for (const c of [...fromPath, ...(process.platform === 'win32' ? [] : NODE_LOCATIONS)]) {
+    let real;
+    try { real = fs.realpathSync(c); } catch { continue; }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    const r = spawnSync(real, ['-p', 'process.versions.node'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    if (r.status === 0 && nodeSupportsDsh(r.stdout.trim())) return stableNodePath(real);
+  }
+  throw new Error(`Node ${process.versions.node} is too old for dsh (needs 22.19+ or 24+) and no newer node was found. Install one, or set DSH_NODE / "nodePath" in the config to its path`);
+}
+
 // ---------- session registry ----------
 
+// workDir is canonical (fs.realpathSync.native), so on macOS it already carries the folder's on-disk letter
+// case; only Windows still needs case folding (drive letters, UNC spellings).
 export function registryKey(workDir) {
   const k = path.resolve(workDir).replace(/[\\/]+$/, '');
-  return process.platform === 'win32' || process.platform === 'darwin' ? k.toLowerCase() : k;
+  return process.platform === 'win32' ? k.toLowerCase() : k;
 }
 
 function registryPath() {
@@ -241,14 +285,14 @@ function saveCurrent(workDir, sid) {
 
 // ---------- running dsh ----------
 
-function runDsh({ bin, sid, workDir, text, mode, patchFile, eventsPath, stderrPath }) {
+function runDsh({ node, bin, sid, workDir, text, mode, patchFile, eventsPath, stderrPath }) {
   const args = [bin, '--profile', 'headless'];
   if (patchFile) args.push('--patch', patchFile);
   args.push('--json');
   if (sid) args.push('--session-id', sid);
   args.push('-');
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
+    const child = spawn(node, args, {
       cwd: workDir,
       env: { ...process.env, DSH_PERMISSION_MODE: mode },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -316,11 +360,13 @@ async function main() {
   if (!PERMISSION_MODES.includes(mode)) return usage(`--mode must be one of ${PERMISSION_MODES.join(', ')}`);
   const maxToolLines = Number(opts['max-tool-lines'] ?? cfg.maxToolLines);
 
-  const workDir = fs.realpathSync(path.resolve(opts.workdir));
+  // .native resolves to the on-disk letter case on macOS/Windows, the same canon dsh uses for workspaces.
+  const workDir = fs.realpathSync.native(path.resolve(opts.workdir));
   if (!fs.statSync(workDir).isDirectory()) return usage(`not a directory: ${workDir}`);
   const text = opts.task ?? stripBom(fs.readFileSync(path.resolve(opts['task-file']), 'utf8'));
   if (!text.trim()) return usage('the task is empty');
   const bin = findDshBin();
+  const node = findDshNode(cfg);
 
   // log directory
   const now = new Date();
@@ -350,7 +396,7 @@ async function main() {
 
   const started = new Date();
   let before = target ? sessionUsage(target) : null;
-  const run = (sid) => runDsh({ bin, sid, workDir, text, mode, patchFile, eventsPath, stderrPath });
+  const run = (sid) => runDsh({ node, bin, sid, workDir, text, mode, patchFile, eventsPath, stderrPath });
   let result = await run(target);
   let note = '';
 
@@ -371,7 +417,9 @@ async function main() {
     before = null;
     result = await run(null);
   }
-  const { exit, events } = result;
+  const { events } = result;
+  // A dsh that exits 0 without a single event did not run the task (e.g. a too-old Node).
+  const exit = result.exit === 0 && !events.length ? 1 : result.exit;
   const elapsed = Math.round((Date.now() - started.getTime()) / 1000);
 
   const sessionEv = events.find((e) => e.type === 'session');
@@ -389,6 +437,8 @@ async function main() {
     if (er) reason += `: ${[er.code, er.message].filter(Boolean).join(' ')}`;
   } else if (errorEv) {
     reason = `error: ${errorEv.message}`;
+  } else if (!events.length) {
+    reason = `dsh printed no events (node ${node})`;
   }
 
   const sid = sessionEv?.sessionId || null;

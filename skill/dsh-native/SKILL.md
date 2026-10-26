@@ -9,7 +9,7 @@ description: 由 Claude 做顶层规划、拆分和验收，把边界清楚的�
 
 ## 前置
 
-- 已全局安装 `dsh`：`npm install -g @deepseek-ai/dsh`（需要 Node 22.19+ 或 24+）。脚本从 PATH 或 `npm root -g` 找 dsh，也可以用环境变量 `DSH_BIN` 指向 `lib/bin.js`。
+- 已全局安装 `dsh`：`npm install -g @deepseek-ai/dsh`（需要 Node 22.19+ 或 24+）。脚本从 PATH 或 `npm root -g` 找 dsh，也可以用环境变量 `DSH_BIN` 指向 `lib/bin.js`。运行脚本的 Node 低于 22.19 时（macOS 上常见：`/usr/local/bin` 的旧 Node 排在 Homebrew 前面），脚本会自动找更新的 Node 跑 dsh，也可以用 `DSH_NODE` 或配置的 `nodePath` 指定。
 - 如果同时用 DeepSeek Harness Desktop，它和命令行版共用 `~/.dsh`，命令行版要和 Desktop 内置的版本一致。
 - API Key：由用户自己配置（`DEEPSEEK_API_KEY` 环境变量、`.env`，或在配置里打开 `reuseSavedCredentials` 复用 Desktop/网页版保存的 Key）。Claude 不读取、不输出 Key。脚本输出里出现 Key 提示时，转告用户按 README 配置。
 - 配置文件：`~/.dsh/dispatch-config.json`（`DS_DISPATCH_CONFIG` 可改路径）。模型、思考强度、默认权限、单价都在里面。
@@ -40,7 +40,7 @@ description: 由 Claude 做顶层规划、拆分和验收，把边界清楚的�
 
 ## 会话锁与界面
 
-- 每个会话同一时间只能有一个写入方（dsh 的系统级锁）。Desktop 或网页版只要点开过某个会话，后台就一直占着它的锁：切到别的会话、关掉网页标签页都不释放；只有完全退出 Desktop（包括托盘图标），或停掉 `dsh web` 服务才释放。
+- 每个会话同一时间只能有一个写入方（dsh 的系统级锁）。Desktop 或网页版只要点开过某个会话，后台就一直占着它的锁：切到别的会话、关掉网页标签页都不释放；只有完全退出 Desktop（Windows 包括托盘图标；macOS 要 ⌘Q，关窗不算），或停掉 `dsh web` 服务才释放。
 - Desktop 不会实时显示别的进程写进来的内容，要完全退出再打开才看得到；网页版刷新页面就能看到。
 - 被锁时任务会自动新开会话，照样完成，只是这一次没享受到接续。用户想在界面里看派发的会话，最好等这一批做完再打开；看过之后，下次派发前提醒用户退出 Desktop 或停掉 `dsh web`。
 - 需要看某个会话的细节而它正被界面占用时，可以只读它的日志：`node session-usage.mjs <会话 id>` 输出该会话的累计用量，不受锁影响。
@@ -48,7 +48,7 @@ description: 由 Claude 做顶层规划、拆分和验收，把边界清楚的�
 ## 在 Desktop 里按项目显示
 
 - Desktop 按工作区（文件夹）分组显示会话，名单在 `~/.dsh/storages/workspace.json`。只有 Desktop 或网页版自己建会话时才会写进名单，headless 不会，所以派发的会话默认出现在"未分组"里。
-- 因此 `ds-task.mjs` 每次跑完都把会话记进 `~/.dsh/dispatch-pending-attach.json`（配置 `attachToWorkspaces` 可关）。用户想在 Desktop 里看时，让用户**先完全退出 Desktop 和 `dsh web`**，再用 `node open-desktop.mjs`（或它在 Windows 上生成的快捷方式）打开：它先把待登记的会话挂到对应文件夹的工作区（没有就新建），再启动 Desktop。
+- 因此 `ds-task.mjs` 每次跑完都把会话记进 `~/.dsh/dispatch-pending-attach.json`（配置 `attachToWorkspaces` 可关）。用户想在 Desktop 里看时，让用户**先完全退出 Desktop 和 `dsh web`**（macOS 上关窗不算退出，要 ⌘Q），再用 `node open-desktop.mjs`（或 `--create-shortcut` 生成的入口：Windows 的快捷方式、macOS `~/Applications` 里的 .app）打开：它先把待登记的会话挂到对应文件夹的工作区（没有就新建），再启动 Desktop。
 - Desktop 或 `dsh web` 正在运行时不能登记：它们把名单放在内存里，下次变动时整份写回文件，会冲掉外部的修改。这时启动器只提醒、不登记。不要在 Desktop 运行时手动改 `workspace.json`。登记前的备份是 `workspace.json.bak-attach`。
 
 ## 任务书模板

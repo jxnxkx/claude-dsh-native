@@ -45,7 +45,7 @@ The cost: dsh must be installed locally, and it is still a developer preview who
 - **Automatic fallback when a session is locked**: dsh allows one writer per session. If resuming fails with `already owned by an active write handle`, the task runs in a new session and the current session stays unchanged; if the session no longer exists, the new one becomes current.
 - **Usage and cost estimate**: reads this run's requests and input / cache-hit / output tokens from the dsh session log and prices them with the configured peak/off-peak rates.
 - **Encoding-safe**: the task text goes to dsh's stdin as raw UTF-8 bytes and the `--json` event stream is written to disk untouched, with no shell re-encoding.
-- **Cross-platform**: plain Node, no dependencies; Windows, macOS and Linux. dsh is located via PATH or `npm root -g`.
+- **Cross-platform**: plain Node, no dependencies; Windows, macOS and Linux. dsh is located via PATH or `npm root -g`; if the Node running the script is older than 22.19, dsh runs on a newer one found on PATH or in Homebrew (see macOS below).
 - **Grouped in Desktop by project**: dispatched sessions are queued, and `open-desktop.mjs` files them under their folder's workspace before launching Desktop, instead of leaving them all "ungrouped". See below.
 - **Logs**: every run writes `~/.dsh/dispatch-logs/<timestamp>/` with `task.md`, `events.jsonl`, `answer.md`, `stderr.log` and `patch.yml`.
 
@@ -70,6 +70,26 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "Run 
 
 See `--help` for all options.
 
+### macOS
+
+Tested on macOS 26 (Apple Silicon, case-insensitive APFS, the default).
+
+```bash
+brew install node@24                      # keg-only: not added to PATH
+export PATH="/opt/homebrew/opt/node@24/bin:$PATH"   # put this in ~/.zprofile to make it the default
+npm install -g @deepseek-ai/dsh
+git clone https://github.com/jxnxkx/claude-dsh-native.git
+cd claude-dsh-native
+node scripts/install.mjs
+node ~/.claude/skills/dsh-native/open-desktop.mjs --create-shortcut
+```
+
+- **Node version**: on Node older than 22.19, dsh **prints nothing and exits 0**. If an older Node comes first on PATH (e.g. the official installer's 22.16 in `/usr/local/bin`, ahead of Homebrew), that is what Claude Code runs `node ds-task.mjs` with. The script then runs dsh on `DSH_NODE`, the config's `nodePath`, or a 22.19+ Node from PATH or common locations such as `/opt/homebrew/opt/node@24/bin/node` (Homebrew's stable `opt/` link is preferred, so `brew upgrade` does not break it), and fails loudly if there is none.
+- **Launcher**: `--create-shortcut` creates "DeepSeek Harness (with dispatched sessions).app" in `~/Applications` (a small `osacompile` applet with Desktop's icon); open it from Launchpad or Spotlight, or drag it to the Dock. `--shortcut-dir ~/Desktop` puts it on the desktop instead. It records absolute paths of the Node and script it was created with; recreate it after moving the skill.
+- **Quitting Desktop fully**: closing the window (red button) leaves every Desktop process running (the main process, its built-in dsh backend, the Electron helpers), still holding session locks and still able to overwrite `workspace.json`. Use ⌘Q, or Quit from the Dock icon; there is no menu-bar icon. The launcher counts any process whose executable is under `/Applications/DeepSeek Harness.app/Contents/` as running; Desktop's backend listens on a random port, not `webPort`.
+- **Notices**: opened as an app there is no terminal, so the launcher shows notices with `osascript display dialog` (dismissed after 20 s).
+- **Letter case**: `--workdir ~/project/myproj` and `~/Project/MyProj` are the same folder. The script takes the on-disk case via `fs.realpathSync.native` (the same canon dsh's `fs.realpath` uses for workspaces), so continuation and workspace matching never fork on case.
+
 ## API key
 
 **Since dsh 0.2.1, the headless profile no longer reads the credentials saved by Desktop/web** (`~/.dsh/.credentials.yaml`); it reads environment variables and `.env` only. Pick one:
@@ -87,6 +107,8 @@ See `--help` for all options.
      disabled: false
    ```
 
+**If Desktop is signed in with a DeepSeek account and has no API key** (the credentials file holds only account grants, no `DEEPSEEK_API_KEY`), none of the above finds a key. Set the config's `agent.provider` to `deepseek-account` (what Desktop itself uses) and turn on `reuseSavedCredentials`; headless then reuses Desktop's sign-in. Billing goes through the account, while the cost estimate still uses the configured API prices and may not match.
+
 If no key is found, the output says so. The script never reads or prints the key.
 
 ## Config
@@ -102,7 +124,8 @@ If no key is found, the output says so. The script never reads or prints the key
 | `maxToolLines` | `40` | Tool calls listed in the summary |
 | `contextWarnTokens` | `200000` | When the context passes this, the output suggests `--new-session`. With a context-folding or replay plugin installed, raise it or set `0` to turn it off |
 | `attachToWorkspaces` | `true` | Queue dispatched sessions so `open-desktop.mjs` can file them under Desktop workspaces |
-| `desktop` | see below | `path` (Desktop executable), `processName` (to detect it running), `webPort` (`dsh web` port, default 3080). `null` means the platform default |
+| `nodePath` | `null` | Node used to run dsh (22.19+). `null`: the Node running the script if new enough, else one from PATH or common locations. `DSH_NODE` takes precedence |
+| `desktop` | see below | `path` (Desktop executable), `processName` (to detect it running; empty by default on macOS, where the .app bundle path is used), `webPort` (`dsh web` port, default 3080). `null` means the platform default |
 | `pricing` | see example | Prices (CNY per 1M tokens, `peak` / `offPeak`, each with `cacheHit` / `cacheMiss` / `output`), `timeZone`, `peakDays`, `peakHours`, `holidays`, `checked` |
 
 Default prices follow the [official pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing) as of 2026-10-24: off-peak cache hit 0.02, cache miss 1, output 4; doubled at peak (weekdays 09–12 and 14–18 Beijing time). When prices change, edit the config only.
@@ -121,6 +144,7 @@ Use `--mode read-only` for research-only tasks.
 ## Session locks and the GUI (observed)
 
 - One writer per session at a time. **Once Desktop or the web UI has opened a session, it keeps that session's write lock**: switching to another session or closing the browser tab does not release it; only quitting Desktop fully (including the tray icon) or stopping `dsh web` does. Dispatches then fall back to a new session (the task still completes, just without continuation).
+- On macOS (observed): merely opening a session may not take the lock right away, but once you have sent a message in it, Desktop's built-in dsh backend holds it until ⌘Q. The lock is `flock(2)`; dsh ships the darwin-arm64 native addon, nothing extra to install.
 - **Desktop does not refresh live** when another process writes to the same session; restart it to see the new turns. The web UI shows them after a page reload.
 - Tip: while Claude is dispatching, don't open that project's current session in the GUI. Look after the batch is done, then quit before the next dispatch.
 
@@ -131,21 +155,21 @@ Desktop groups sessions by workspace (folder); the list lives in `~/.dsh/storage
 What this project does:
 
 1. After each run, `ds-task.mjs` appends `{sessionId, workDir}` to `~/.dsh/dispatch-pending-attach.json`.
-2. **Quit Desktop fully (including the tray icon) and stop `dsh web`**, then run:
+2. **Quit Desktop fully (on Windows including the tray icon; on macOS ⌘Q, closing the window is not enough) and stop `dsh web`**, then run:
 
    ```bash
    node ~/.claude/skills/dsh-native/open-desktop.mjs
    ```
 
-   It finds the workspace for each folder by canonical path (case-insensitive on Windows) and puts the session first; a folder without a workspace gets a new one (titled after the folder, listed first); sessions already in a workspace are skipped. The registry is backed up to `workspace.json.bak-attach` and written atomically (temp file + rename). Then Desktop starts.
+   It finds the workspace for each folder by canonical path (both sides go through `realpath`, so other letter case or a symlinked path still matches; Windows also folds case) and puts the session first; a folder without a workspace gets a new one (titled after the folder, listed first); sessions already in a workspace are skipped. The registry is backed up to `workspace.json.bak-attach` and written atomically (temp file + rename), keeping the file's permissions (dsh makes it owner-only on macOS/Linux). Then Desktop starts.
 
    - `--dry-run`: report the queue size, whether Desktop/web is running and which program would start; change nothing.
    - `--no-launch`: attach only.
-   - `--create-shortcut` (Windows only): add a "DeepSeek Harness (with dispatched sessions)" shortcut to the desktop and Start menu.
+   - `--create-shortcut`: on Windows, add a "DeepSeek Harness (with dispatched sessions)" shortcut to the desktop and Start menu; on macOS, an app of that name in `~/Applications` (see macOS above).
 
-Why quit first: while running, Desktop and `dsh web` keep the list in memory, do not watch the file, and rewrite the whole file on their next change, so an outside edit would be lost. When the launcher sees them running (by process name and the `webPort` port), it only warns and launches Desktop without attaching. Log: `~/.dsh/dispatch-logs/open-desktop.log`.
+Why quit first: while running, Desktop and `dsh web` keep the list in memory, do not watch the file, and rewrite the whole file on their next change, so an outside edit would be lost. When the launcher sees them running (by process name or, on macOS, the .app bundle path, and the `webPort` port), it only warns and launches Desktop without attaching. Log: `~/.dsh/dispatch-logs/open-desktop.log`.
 
-Default Desktop locations: Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`, macOS `/Applications/DeepSeek Harness.app`; Linux has no default, set `desktop.path`. Tested on Windows only: after quitting Desktop and opening it through the launcher, new workspaces and attached sessions showed up correctly. The macOS and Linux defaults (path and process name) are unverified; override them in the config if they are wrong.
+Default Desktop locations: Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`, macOS `/Applications/DeepSeek Harness.app`; Linux has no default, set `desktop.path`. Tested on Windows and macOS: after quitting Desktop and opening it through the launcher, new workspaces and attached sessions showed up correctly. The Linux defaults are unverified; set them in the config.
 
 ## Observed effect
 
@@ -163,6 +187,8 @@ In a small directory, the first (new-session) task read a file and answered: 3 r
 
 - `@deepseek-ai/dsh` 0.2.1-rc.3 (CLI and Desktop on the same version), model `deepseek-flash` (DeepSeek-V4.1-Flash-1017)
 - Node 24.15, Windows 10 (PowerShell 5.1 and Git Bash)
+- Node 24.22.1 (Homebrew `node@24`) and 22.16 (script only; dsh switched to 24), macOS 26.5 (Apple Silicon, case-insensitive APFS), Desktop 0.2.1-rc.3 (`com.deepseek.dsh`), account sign-in (`deepseek-account`)
+  - Tested: new session, continuation (`--workdir` in other letter case), two processes racing for a session, fallback while Desktop holds the session; after quitting Desktop, the launcher attached the sessions and they showed under their workspace
 
 dsh is a developer preview; its event format, profile plugin ids and session log format may change. Session logs are zstd-compressed and need the built-in zstd support of Node 22.15+ / 23.8+.
 

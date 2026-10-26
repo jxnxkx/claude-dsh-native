@@ -19,9 +19,14 @@ export const pendingPath = (home = dshHome()) => path.join(home, 'dispatch-pendi
 
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, ''));
 
+// The rename replaces the file, so carry its permissions over: dsh keeps workspace.json owner-only (0600) on
+// macOS/Linux, and a fresh file would get the umask default (usually 0644).
 function writeJsonAtomic(p, value) {
   const tmp = `${p}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  let mode = 0o600;
+  try { mode = fs.statSync(p).mode & 0o777; } catch { }
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), { mode });
+  fs.chmodSync(tmp, mode); // writeFileSync's mode is still masked by the umask
   fs.renameSync(tmp, p);
 }
 
@@ -42,8 +47,15 @@ export function queueAttach(sessionId, workDir, home = dshHome()) {
   writeJsonAtomic(pendingPath(home), list);
 }
 
-// Paths are compared the way the registry stores them: canonical, and case-insensitive on Windows.
-const sameDir = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+// dsh stores workspace paths as fs.realpath canon and matches them by string equality. `dir` is canonical
+// (realpathSync.native, which on macOS returns the on-disk letter case); the stored path is re-canonicalized
+// too when it still exists, so a folder renamed by case or reached through a symlink still matches its
+// workspace instead of getting a duplicate. Windows also folds case.
+const canon = (p) => { try { return fs.realpathSync.native(p); } catch { return p; } };
+const sameDir = (stored, dir) => {
+  const a = canon(stored);
+  return process.platform === 'win32' ? a.toLowerCase() === dir.toLowerCase() : a === dir;
+};
 
 function sessionLogExists(sessionsRoot, id) {
   const stack = [sessionsRoot];

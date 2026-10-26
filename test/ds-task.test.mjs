@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DEFAULT_CONFIG, buildPatch, estimateCost, isPeak, loadConfig, readEvents, registryKey } from '../skill/dsh-native/ds-task.mjs';
+import { spawnSync } from 'node:child_process';
+import { DEFAULT_CONFIG, buildPatch, estimateCost, findDshNode, isPeak, loadConfig, nodeSupportsDsh, readEvents, registryKey, stableNodePath } from '../skill/dsh-native/ds-task.mjs';
 
 const pricing = DEFAULT_CONFIG.pricing;
 
@@ -64,4 +65,43 @@ test('event stream parsing skips junk lines', () => {
 
 test('registry key ignores trailing separators', () => {
   assert.equal(registryKey(path.join(os.tmpdir(), 'x') + path.sep), registryKey(path.join(os.tmpdir(), 'x')));
+});
+
+test('dsh needs Node 22.19+ or 24+', () => {
+  for (const v of ['22.19.0', 'v22.20.1', '23.0.0', '24.22.1']) assert.equal(nodeSupportsDsh(v), true, v);
+  for (const v of ['22.16.0', 'v22.18.9', '20.11.1']) assert.equal(nodeSupportsDsh(v), false, v);
+});
+
+test('the node for dsh: DSH_NODE wins, a missing one is an error', () => {
+  const saved = process.env.DSH_NODE;
+  try {
+    process.env.DSH_NODE = process.execPath;
+    assert.equal(findDshNode({ nodePath: '/nowhere/node' }), process.execPath);
+    delete process.env.DSH_NODE;
+    assert.throws(() => findDshNode({ nodePath: path.join(os.tmpdir(), 'no-such-node') }), /nodePath points to a missing file/);
+    if (nodeSupportsDsh(process.versions.node)) assert.equal(findDshNode({}), stableNodePath(process.execPath));
+  } finally {
+    if (saved === undefined) delete process.env.DSH_NODE; else process.env.DSH_NODE = saved;
+  }
+});
+
+test('peak detection does not depend on the system time zone', () => {
+  const code = `import('${new URL('../skill/dsh-native/ds-task.mjs', import.meta.url).href}').then((m) => {
+    const p = m.DEFAULT_CONFIG.pricing;
+    console.log([m.isPeak(new Date('2026-10-26T02:30:00Z'), p), m.isPeak(new Date('2026-10-26T04:30:00Z'), p), m.estimateCost({ hit: 0, miss: 0, out: 0 }, new Date('2026-10-26T02:30:00Z'), p).local].join(','));
+  });`;
+  for (const TZ of ['America/Los_Angeles', 'UTC', 'Asia/Shanghai', 'Pacific/Kiritimati']) {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', env: { ...process.env, TZ } });
+    assert.equal(r.stdout.trim(), 'true,false,10-26 10:30', TZ);
+  }
+});
+
+test('Homebrew Cellar paths map to the stable opt link when it exists', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsd-brew-'));
+  fs.mkdirSync(path.join(root, 'opt', 'node@24', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'opt', 'node@24', 'bin', 'node'), '');
+  assert.equal(stableNodePath(`${root}/Cellar/node@24/24.22.1/bin/node`), `${root}/opt/node@24/bin/node`);
+  assert.equal(stableNodePath(`${root}/Cellar/node@22/22.20.0/bin/node`), `${root}/Cellar/node@22/22.20.0/bin/node`);
+  assert.equal(stableNodePath('/usr/local/bin/node'), '/usr/local/bin/node');
+  fs.rmSync(root, { recursive: true });
 });
