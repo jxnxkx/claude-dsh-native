@@ -8,6 +8,13 @@
   },
   "reuseSavedCredentials": false,
   "maxToolLines": 40,
+  "contextWarnTokens": 200000,
+  "attachToWorkspaces": true,
+  "desktop": {
+    "path": null,
+    "processName": null,
+    "webPort": 3080
+  },
   "pricing": {
     "currency": "CNY",
     "unit": "per 1M tokens",

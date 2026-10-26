@@ -16,6 +16,7 @@ import { spawn, execSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dshHome, sessionUsage } from './session-usage.mjs';
+import { queueAttach } from './attach-workspaces.mjs';
 
 export const PERMISSION_MODES = ['read-only', 'workspace-write', 'danger-full-access'];
 
@@ -27,6 +28,11 @@ export const DEFAULT_CONFIG = {
   // dsh 0.2.1+ headless ignores the key saved by Desktop/web unless these plugins are re-enabled.
   reuseSavedCredentials: false,
   maxToolLines: 40,
+  // Suggest --new-session once the context passes this many tokens; 0 or null turns the hint off
+  // (e.g. with a context-folding plugin installed).
+  contextWarnTokens: 200000,
+  // Queue dispatched sessions for open-desktop.mjs, which files them under Desktop's workspaces.
+  attachToWorkspaces: true,
   pricing: {
     currency: 'CNY',
     unit: 'per 1M tokens',
@@ -61,6 +67,7 @@ const MESSAGES = {
     stderr: '--- stderr（末尾）---',
     answer: '--- DeepSeek 的回答 ---',
     none: '（无）',
+    bigContext: (ctx, limit) => `提示：当前上下文约 ${ctx} tokens，超过 ${limit}。下一个任务如果和之前的工作无关，或者想清空上下文，可以加 --new-session。`,
     keyHint: '提示：dsh 没拿到 API Key。设置 DEEPSEEK_API_KEY 环境变量（或 .env），或在配置里打开 reuseSavedCredentials 复用 Desktop/网页版保存的 Key。见 README。',
   },
   en: {
@@ -82,6 +89,7 @@ const MESSAGES = {
     stderr: '--- stderr (tail) ---',
     answer: "--- DeepSeek's answer ---",
     none: '(none)',
+    bigContext: (ctx, limit) => `Hint: the context is now ~${ctx} tokens, over ${limit}. If the next task is unrelated, or you want a clean context, add --new-session.`,
     keyHint: 'Hint: dsh found no API key. Set DEEPSEEK_API_KEY (environment or .env), or enable reuseSavedCredentials in the config to reuse the key saved by Desktop/web. See README.',
   },
 };
@@ -385,6 +393,7 @@ async function main() {
 
   const sid = sessionEv?.sessionId || null;
   if (sid && updateCurrent && turnStarted(events)) saveCurrent(workDir, sid);
+  if (sid && cfg.attachToWorkspaces && turnStarted(events)) queueAttach(sid, workDir);
 
   // this run's usage = session totals after - session totals before
   let usageLine = '';
@@ -408,6 +417,9 @@ async function main() {
   if (note) lines.push(M.note(note));
   if (usageLine) lines.push(usageLine);
   if (costLine) lines.push(costLine);
+  if (after?.found && cfg.contextWarnTokens > 0 && after.lastPromptTokens > cfg.contextWarnTokens) {
+    lines.push(M.bigContext(after.lastPromptTokens, cfg.contextWarnTokens));
+  }
   lines.push(M.dir(workDir, mode), M.logs(logDir), M.tools(toolCalls.length));
   for (const c of toolCalls.slice(0, maxToolLines)) {
     const { type, ...rest } = c;

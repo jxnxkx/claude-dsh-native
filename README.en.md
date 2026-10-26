@@ -46,6 +46,7 @@ The cost: dsh must be installed locally, and it is still a developer preview who
 - **Usage and cost estimate**: reads this run's requests and input / cache-hit / output tokens from the dsh session log and prices them with the configured peak/off-peak rates.
 - **Encoding-safe**: the task text goes to dsh's stdin as raw UTF-8 bytes and the `--json` event stream is written to disk untouched, with no shell re-encoding.
 - **Cross-platform**: plain Node, no dependencies; Windows, macOS and Linux. dsh is located via PATH or `npm root -g`.
+- **Grouped in Desktop by project**: dispatched sessions are queued, and `open-desktop.mjs` files them under their folder's workspace before launching Desktop, instead of leaving them all "ungrouped". See below.
 - **Logs**: every run writes `~/.dsh/dispatch-logs/<timestamp>/` with `task.md`, `events.jsonl`, `answer.md`, `stderr.log` and `patch.yml`.
 
 ## Install
@@ -99,6 +100,9 @@ If no key is found, the output says so. The script never reads or prints the key
 | `agent` | `{"provider":"deepseek-official","model":"deepseek-flash","reasoningEffort":"max"}` | Written into each run's `--patch` and **replaces** the headless profile's `agent-default-model` config. Thinking effort: `off / low / high / max`. `null` keeps the profile as it is |
 | `reuseSavedCredentials` | `false` | See above |
 | `maxToolLines` | `40` | Tool calls listed in the summary |
+| `contextWarnTokens` | `200000` | When the context passes this, the output suggests `--new-session`. With a context-folding or replay plugin installed, raise it or set `0` to turn it off |
+| `attachToWorkspaces` | `true` | Queue dispatched sessions so `open-desktop.mjs` can file them under Desktop workspaces |
+| `desktop` | see below | `path` (Desktop executable), `processName` (to detect it running), `webPort` (`dsh web` port, default 3080). `null` means the platform default |
 | `pricing` | see example | Prices (CNY per 1M tokens, `peak` / `offPeak`, each with `cacheHit` / `cacheMiss` / `output`), `timeZone`, `peakDays`, `peakHours`, `holidays`, `checked` |
 
 Default prices follow the [official pricing page](https://api-docs.deepseek.com/zh-cn/quick_start/pricing) as of 2026-10-24: off-peak cache hit 0.02, cache miss 1, output 4; doubled at peak (weekdays 09–12 and 14–18 Beijing time). When prices change, edit the config only.
@@ -116,9 +120,32 @@ Use `--mode read-only` for research-only tasks.
 
 ## Session locks and the GUI (observed)
 
-- One writer per session at a time. **Once Desktop or the web UI has opened a session, it keeps that session's write lock**: switching to another session or closing the browser tab does not release it; only quitting Desktop or stopping the web server does. Dispatches then fall back to a new session (the task still completes, just without continuation).
+- One writer per session at a time. **Once Desktop or the web UI has opened a session, it keeps that session's write lock**: switching to another session or closing the browser tab does not release it; only quitting Desktop fully (including the tray icon) or stopping `dsh web` does. Dispatches then fall back to a new session (the task still completes, just without continuation).
 - **Desktop does not refresh live** when another process writes to the same session; restart it to see the new turns. The web UI shows them after a page reload.
 - Tip: while Claude is dispatching, don't open that project's current session in the GUI. Look after the batch is done, then quit before the next dispatch.
+
+## Showing dispatched sessions under their project in Desktop
+
+Desktop groups sessions by workspace (folder); the list lives in `~/.dsh/storages/workspace.json`. A session only gets into it when Desktop or the web UI creates the session itself. Headless runs never do, so dispatched sessions show up as "ungrouped". Adding dsh's workspace plugin to the headless profile does not help (tested: the plugin only provides the interface and never attaches anything by itself).
+
+What this project does:
+
+1. After each run, `ds-task.mjs` appends `{sessionId, workDir}` to `~/.dsh/dispatch-pending-attach.json`.
+2. **Quit Desktop fully (including the tray icon) and stop `dsh web`**, then run:
+
+   ```bash
+   node ~/.claude/skills/dsh-native/open-desktop.mjs
+   ```
+
+   It finds the workspace for each folder by canonical path (case-insensitive on Windows) and puts the session first; a folder without a workspace gets a new one (titled after the folder, listed first); sessions already in a workspace are skipped. The registry is backed up to `workspace.json.bak-attach` and written atomically (temp file + rename). Then Desktop starts.
+
+   - `--dry-run`: report the queue size, whether Desktop/web is running and which program would start; change nothing.
+   - `--no-launch`: attach only.
+   - `--create-shortcut` (Windows only): add a "DeepSeek Harness (with dispatched sessions)" shortcut to the desktop and Start menu.
+
+Why quit first: while running, Desktop and `dsh web` keep the list in memory, do not watch the file, and rewrite the whole file on their next change, so an outside edit would be lost. When the launcher sees them running (by process name and the `webPort` port), it only warns and launches Desktop without attaching. Log: `~/.dsh/dispatch-logs/open-desktop.log`.
+
+Default Desktop locations: Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`, macOS `/Applications/DeepSeek Harness.app`; Linux has no default, set `desktop.path`. Tested on Windows only: after quitting Desktop and opening it through the launcher, new workspaces and attached sessions showed up correctly. The macOS and Linux defaults (path and process name) are unverified; override them in the config if they are wrong.
 
 ## Observed effect
 

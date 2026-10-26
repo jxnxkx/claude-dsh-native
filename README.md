@@ -44,6 +44,7 @@ Claude 把任务写成任务书，用 `ds-task.mjs` 交给 dsh；dsh 作为一�
 - **用量和费用估算**：从 dsh 会话日志里读出本次的请求数、输入/缓存命中/输出 tokens，按配置的单价和高峰/闲时段估算人民币费用。
 - **编码安全**：任务文本按原始 UTF-8 字节写进 dsh 的 stdin，事件流（`--json`）原样落盘，不经过 shell 的编码转换。
 - **跨平台**：纯 Node，无依赖，Windows / macOS / Linux 通用。dsh 的位置从 PATH 或 `npm root -g` 自动查找。
+- **在 Desktop 里按项目显示**：派发的会话会排队登记，用 `open-desktop.mjs` 打开 Desktop 时自动挂到对应文件夹的工作区，不再全部堆在"未分组"里。见下文。
 - **日志**：每次运行写到 `~/.dsh/dispatch-logs/<时间戳>/`：`task.md`、`events.jsonl`、`answer.md`、`stderr.log`、`patch.yml`。
 
 ## 安装
@@ -97,6 +98,9 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑�
 | `agent` | `{"provider":"deepseek-official","model":"deepseek-flash","reasoningEffort":"max"}` | 写进每次运行的 `--patch`，**整体替换** headless profile 里 `agent-default-model` 的配置；思考强度可选 `off / low / high / max`。设为 `null` 则完全沿用 profile |
 | `reuseSavedCredentials` | `false` | 见上一节 |
 | `maxToolLines` | `40` | 汇总里列出的工具调用条数 |
+| `contextWarnTokens` | `200000` | 当前上下文超过这个值时，输出里提示可以 `--new-session`。装了上下文折叠或回放插件的话，可以调高，或设为 `0` 关掉 |
+| `attachToWorkspaces` | `true` | 把派发的会话记进待登记队列，供 `open-desktop.mjs` 挂到 Desktop 的工作区 |
+| `desktop` | 见下文 | `path`（Desktop 程序位置）、`processName`（用来判断它是否在运行）、`webPort`（`dsh web` 的端口，默认 3080）。值为 `null` 时用平台默认 |
 | `pricing` | 见样例 | 单价（人民币/百万 tokens，分 `peak` / `offPeak`，各含 `cacheHit` / `cacheMiss` / `output`）、`timeZone`、`peakDays`、`peakHours`、`holidays`、`checked`（核对日期） |
 
 默认单价按 2026-10-24 的[官方价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)：闲时 命中 0.02、未命中 1、输出 4；高峰（北京时间工作日 9–12 点、14–18 点）翻倍。价格变了只改配置文件。
@@ -114,9 +118,32 @@ node ~/.claude/skills/dsh-native/ds-task.mjs --workdir ./my-project --task "跑�
 
 ## 会话锁和 GUI（实测结论）
 
-- 每个会话同一时间只能有一个写入方。**Desktop 或网页版只要点开过某个会话，就一直占着它的写入锁**：切到别的会话、关掉网页标签页都不释放，只有退出 Desktop 或关掉网页版的服务进程才释放。这时派发会自动新开会话（任务照样完成，只是这次没有接续）。
+- 每个会话同一时间只能有一个写入方。**Desktop 或网页版只要点开过某个会话，就一直占着它的写入锁**：切到别的会话、关掉网页标签页都不释放，只有完全退出 Desktop（包括托盘图标）或停掉 `dsh web` 服务才释放。这时派发会自动新开会话（任务照样完成，只是这次没有接续）。
 - **Desktop 不会实时刷新**别的进程写进同一会话的内容，要退出重开才看得到；网页版刷新页面就能看到。
 - 建议：让 Claude 连续派发时，不要在 GUI 里点开那个项目的当前会话；想看过程，等一批任务做完再打开，看完后退出，下次派发前再接续。
+
+## 在 Desktop 里按项目显示派发的会话
+
+Desktop 按工作区（文件夹）分组显示会话，名单存在 `~/.dsh/storages/workspace.json`。只有 Desktop 或网页版自己建会话时，才会把会话写进名单；headless 不会，所以派发的会话默认都在"未分组"里。把 dsh 的工作区插件加进 headless profile 也没用（实测：插件只提供接口，不会自动登记）。
+
+本项目的做法：
+
+1. `ds-task.mjs` 每次跑完，把 `{sessionId, workDir}` 追加到 `~/.dsh/dispatch-pending-attach.json`。
+2. **先完全退出 Desktop（包括托盘图标），并停掉 `dsh web`**，然后运行：
+
+   ```bash
+   node ~/.claude/skills/dsh-native/open-desktop.mjs
+   ```
+
+   它按规范化后的路径找到对应的工作区（Windows 上不区分大小写），把会话插到最前面；文件夹还没有工作区就新建一个（标题取文件夹名，排在最前）；已经在某个工作区里的会话跳过。写入前先备份为 `workspace.json.bak-attach`，再用临时文件加重命名的方式原子写入。最后启动 Desktop。
+
+   - `--dry-run`：只报告有几个待登记、Desktop/网页版是否在运行、会启动哪个程序，不做任何改动。
+   - `--no-launch`：只登记，不启动。
+   - `--create-shortcut`（仅 Windows）：在桌面和开始菜单生成"DeepSeek Harness（含派发会话）"快捷方式，以后从这里打开即可。
+
+为什么必须先退出：Desktop 和 `dsh web` 运行时把名单放在内存里，下次变动时整份写回文件，也不监听外部修改，所以这时改了也会被冲掉。启动器检测到它们在运行时（按进程名和 `webPort` 端口判断）只提醒，不登记，照常启动 Desktop。日志在 `~/.dsh/dispatch-logs/open-desktop.log`。
+
+Desktop 的位置默认是：Windows `%LOCALAPPDATA%\Programs\DeepSeek Harness\DeepSeek Harness.exe`，macOS `/Applications/DeepSeek Harness.app`；Linux 没有默认值，需要在配置的 `desktop.path` 里填。只在 Windows 上实测过：退出 Desktop 后用启动器打开，新建的工作区和挂进去的会话都正常显示。macOS 和 Linux 的默认路径和进程名未经验证，不对的话请在配置里改。
 
 ## 实测效果
 
